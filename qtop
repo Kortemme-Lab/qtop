@@ -47,11 +47,8 @@ def sh(cmd):
     stdout, unused_stderr = process.communicate()
     retcode = process.poll()
     if retcode:
-        cmd = kwargs.get("args")
-        if cmd is None:
-            cmd = popenargs[0]
         error = subprocess.CalledProcessError(retcode, cmd)
-        error.output = output
+        error.output = stdout
         raise error
     return stdout.strip()
 
