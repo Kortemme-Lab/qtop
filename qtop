@@ -18,7 +18,7 @@ Options:
 
 """
 
-import subprocess, getpass
+import subprocess, getpass, collections, itertools
 
 def sh(cmd):
     """
@@ -71,14 +71,128 @@ def choose_project(project=None, user=None):
                 awk '{{print $2}}' ''')
 
 
+class Job (object):
+
+    def __init__(self, qstat_line):
+        try:
+            fields = qstat_line.split()
+
+            self.id = fields[0]
+            self.prior = fields[1]
+            self.ntckts = fields[2]
+            self.name = fields[3]
+            self.user = fields[4]
+            self.project = fields[5]
+            self.department = fields[6]
+            self.state = fields[7]
+
+            if 'r' in self.state:
+                self.cpu = fields[8]
+                self.mem = fields[9]
+                self.io = fields[10]
+                self.tckts = fields[11]
+                self.ovrts = fields[12]
+                self.otckt = fields[13]
+                self.ftckt = fields[14]
+                self.stckt = fields[15]
+                self.share = fields[16]
+                self.queue = fields[17]
+                self.slots = fields[18]
+                try: self.ja_task_id = fields[16]
+                except IndexError: self.ja_task_id = ''
+
+            else:
+                self.tckts = fields[8]
+                self.ovrts = fields[9]
+                self.otckt = fields[10]
+                self.ftckt = fields[11]
+                self.stckt = fields[12]
+                self.share = fields[13]
+                self.slots = fields[14]
+                try: self.ja_task_id = fields[15]
+                except IndexError: self.ja_task_id = ''
+
+        except:
+            print 'Error parsing qstat line:'
+            print '  ', qstat_line
+            raise 
+
+
+
+def query_jobs():
+    jobs = []
+
+    for line in sh('qstat -ext -u \\*').split('\n')[2:]:
+        job = Job(line)
+        jobs.append(job)
+
+    return jobs
+
+def display_jobs(jobs, filter, display='{count:>7d} {job.user:12} {job.name}'):
+    job_counts = {}
+
+    for job in itertools.ifilter(filter, jobs):
+        job_name = job.user, job.name
+        job_counts.setdefault(job_name, {'job': job, 'count': 0})
+        job_counts[job_name]['count'] += 1
+    
+    if not job_counts:
+        print '  none'
+        return
+
+    for user, name in sorted(job_counts):
+        job, count = job_counts[user, name]
+        print display.format(**job_counts[user, name])
+
+def display_running_jobs(jobs, project=None):
+    if project is None:
+        print "Currently running jobs:"
+        display_jobs(jobs, lambda j: j.state == 'r')
+        print
+    else:
+        print "Currently running jobs by {0} users:".format(project)
+        display_jobs(jobs, lambda j: j.state == 'r' and j.project == project)
+        print
+
+def display_queued_jobs(jobs, project=None):
+    filter = lambda j: j.state == 'qw'
+    display = '{count:>7d} {job.user:12} {job.name} ({job.ja_task_id})'
+
+    if project is None:
+        print "Currently queued jobs:"
+        display_jobs(jobs, filter, display)
+        print
+    else:
+        print "Currently queued jobs by {0} users:".format(project)
+        display_jobs(jobs, lambda j: filter(j) and j.project == project, display)
+        print
+
+def display_remaining_jobs(jobs, project=None):
+    filter = lambda j: j.state not in ('r', 'qw')
+    display = '{count:>7d} {job.user:12} {job.name} ({job.state})'
+    
+    if project is None:
+        print "Remaining jobs:"
+        display_jobs(jobs, filter, display)
+        print
+    else:
+        print "Remaining jobs by {0} users:".format(project)
+        display_jobs(jobs, lambda j: filter(j) and j.project == project, display)
+        print
+
+
+
 if __name__ == '__main__':
     import docopt
     args = docopt.docopt(__doc__)
 
-    # Figure out what user and project to display information for.  If the user
-    # specifies these parameters on the command line, use them.  Otherwise use
-    # the projects the current user belongs to.
+    # Figure out what projects to display information for.  If the user
+    # specifies one or more projects on the command line, use them.  Otherwise
+    # use the projects the current user belongs to.
 
-    print 'User:', choose_user(args['--user'])
-    print 'Project:', choose_project(args['--project'])
+    jobs = query_jobs()
+    project = choose_project(args['--project'])
 
+    display_running_jobs(jobs, project)
+    display_queued_jobs(jobs, project)
+    display_remaining_jobs(jobs, project)
