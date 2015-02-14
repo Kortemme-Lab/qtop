@@ -42,7 +42,7 @@ def sh(cmd):
 
     # Run the given command in a shell.  Return everything written to stdout if
     # the command returns an error code of 0, otherwise raise an exception.
-    
+
     from subprocess import Popen, PIPE, CalledProcessError
     process = Popen(cmd.format(**locals), shell=True, stdout=PIPE)
     stdout, unused_stderr = process.communicate()
@@ -116,7 +116,7 @@ class Job (object):
         except:
             print 'Error parsing qstat line:'
             print '  ', qstat_line
-            raise 
+            raise
 
 
 
@@ -136,7 +136,7 @@ def display_jobs(jobs, filter, display='{count:>7d} {job.user:12} {job.name}'):
         job_name = job.user, job.name
         job_counts.setdefault(job_name, {'job': job, 'count': 0})
         job_counts[job_name]['count'] += 1
-    
+
     if not job_counts:
         print '  none'
         return
@@ -171,7 +171,7 @@ def display_queued_jobs(jobs, project=None):
 def display_remaining_jobs(jobs, project=None):
     filter = lambda j: j.state not in ('r', 'qw')
     display = '{count:>7d} {job.user:12} {job.name} ({job.state})'
-    
+
     if project is None:
         print "Remaining jobs:"
         display_jobs(jobs, filter, display)
