@@ -1,4 +1,5 @@
 #!/usr/bin/env python2
+# -*- mode:python;show-trailing-whitespace:t; -*-
 
 """
 Show which jobs are running on the cluster.
