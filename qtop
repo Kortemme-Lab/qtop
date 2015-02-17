@@ -243,6 +243,6 @@ if __name__ == '__main__':
 
     testing_mode = args['--test']
     interval = args['--interval']
-    project = args['--project']
+    project = choose_project(args['--project'])
 
     run( project, testing_mode=testing_mode, interval=interval )
