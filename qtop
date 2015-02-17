@@ -30,11 +30,11 @@ Options:
 import subprocess, getpass, collections, itertools
 import os
 import time
+import random
+from Queue import Queue
+from threading import Thread
 from blessings import Terminal
 term = Terminal()
-
-# Global variable (for testing behavior only)
-test_iteration = 0
 
 def sh(cmd):
     """
@@ -88,82 +88,196 @@ def choose_project(project=None, user=None):
 
 
 class Job (object):
-
     def __init__(self, qstat_line):
+        fields = qstat_line.split()
         try:
-            fields = qstat_line.split()
-
-            self.id = fields[0]
-            self.prior = fields[1]
-            self.ntckts = fields[2]
-            self.name = fields[3]
-            self.user = fields[4]
-            self.project = fields[5]
-            self.department = fields[6]
-            self.state = fields[7]
-
-            if 'r' in self.state:
-                self.cpu = fields[8]
-                self.mem = fields[9]
-                self.io = fields[10]
-                self.tckts = fields[11]
-                self.ovrts = fields[12]
-                self.otckt = fields[13]
-                self.ftckt = fields[14]
-                self.stckt = fields[15]
-                self.share = fields[16]
-                self.queue = fields[17]
-                self.slots = fields[18]
-                try: self.ja_task_id = fields[16]
-                except IndexError: self.ja_task_id = ''
-
-            else:
-                self.tckts = fields[8]
-                self.ovrts = fields[9]
-                self.otckt = fields[10]
-                self.ftckt = fields[11]
-                self.stckt = fields[12]
-                self.share = fields[13]
-                self.slots = fields[14]
-                try: self.ja_task_id = fields[15]
-                except IndexError: self.ja_task_id = ''
-
+            self.update_from_fields(fields)
         except:
             print 'Error parsing qstat line:'
             print '  ', qstat_line
             raise
 
+        # This is everything but "name" so far
+        self.basic_attrs_to_update = [
+            'id', 'prior', 'ntckts', 'user', 'project',
+            'department', 'state', 'cpu', 'mem', 'io',
+            'tckts', 'ovrts', 'otckt', 'ftckt', 'stckt',
+            'share', 'queue', 'slots', 'ja_task_id',
+        ]
 
+    def update_from_fields(self, fields):
+        self.id = long(fields[0])
+        self.prior = fields[1]
+        self.ntckts = fields[2]
+        self.name = fields[3]
+        self.short_name = self.name
+        self.user = fields[4]
+        self.project = fields[5]
+        self.department = fields[6]
+        self.state = fields[7]
 
-def query_jobs(testing_mode=False):
-    jobs = []
+        if 'r' in self.state:
+            self.cpu = fields[8]
+            self.mem = fields[9]
+            self.io = fields[10]
+            self.tckts = fields[11]
+            self.ovrts = fields[12]
+            self.otckt = fields[13]
+            self.ftckt = fields[14]
+            self.stckt = fields[15]
+            self.share = fields[16]
+            self.queue = fields[17]
+            self.slots = fields[18]
+            try: self.ja_task_id = fields[16]
+            except IndexError: self.ja_task_id = ''
 
-    if testing_mode:
-        input_data = read_from_test_output()
-    else:
-        input_data = sh('qstat -ext -u \\*').split('\n')
+        else:
+            self.cpu = None
+            self.mem = None
+            self.io = None
+            self.tckts = fields[8]
+            self.ovrts = fields[9]
+            self.otckt = fields[10]
+            self.ftckt = fields[11]
+            self.stckt = fields[12]
+            self.share = fields[13]
+            self.queue = None
+            self.slots = fields[14]
+            try: self.ja_task_id = fields[15]
+            except IndexError: self.ja_task_id = ''
 
-    for line in input_data[2:]:
-        job = Job(line)
-        jobs.append(job)
+    def update(self, other):
+        for attr in self.basic_attrs_to_update:
+            setattr(self, attr, getattr(other, attr))
 
-    return jobs
+    def set_qstat_data(self, qstat_data):
+        self.qstat_data = qstat_data
 
-def read_from_test_output():
-    global test_iteration
-    test_iteration += 1
+        if 'job_name' in qstat_data:
+            self.full_name = qstat_data['job_name']
+            self.name = self.full_name
+
+def update_job_data(job_id_queue, results_queue, testing_mode):
+    while True:
+        if not job_id_queue.empty():
+            job_id = job_id_queue.get()
+
+            if testing_mode:
+                qstat_file = 'testing_output/job_specific_output/%d' % job_id
+                if os.path.isfile(qstat_file):
+                    with open(qstat_file, 'r') as f:
+                        qstat_output = f.readlines()
+                else:
+                    qstat_output = None
+            else:
+                try:
+                    qstat_output = sh('qstat -j %d' % job_id).split('\n')
+                except:
+                    qstat_output = None
+
+            if qstat_output:
+                qstat_data = {}
+                for line in qstat_output[1:]:
+                    fields = line.split(':')
+                    if len(fields) == 2:
+                        qstat_data[fields[0].strip()] = fields[1].strip()
+                if len(qstat_data) > 0:
+                    results_queue.put(qstat_data)
+                    time.sleep(2.0) # Only run qstat -j every n seconds
+        else:
+            time.sleep(0.1) # Check queue more often
+
+class Jobs (object):
+    def __init__(self, testing_mode, project):
+        self.jobs = {}
+        self.project = project
+        self.test_iteration = 0
+        self.testing_mode = testing_mode
+
+        self.jobs_to_update = Queue()
+        self.updated_jobs_results = Queue()
+        self.job_data_updater = Thread(
+            target=update_job_data,
+            args = (
+                self.jobs_to_update,
+                self.updated_jobs_results,
+                self.testing_mode)
+        )
+        self.job_data_updater.daemon = True
+        self.job_data_updater.start()
+
+    def update(self):
+        self.jobs = {}
+        if self.testing_mode:
+            input_data = read_from_test_output(self.test_iteration)
+            self.test_iteration += 1
+        else:
+            input_data = sh('qstat -ext -u \\*').split('\n')
+
+        parsed_job_ids = set()
+        new_job_ids = set()
+        old_job_ids = set(self.jobs.keys())
+        for line in input_data[2:]:
+            print line
+            job = Job(line)
+            parsed_job_ids.add(job.id)
+            if job.id in self.jobs:
+                print job.id
+                self.jobs[job.id] = self.jobs[job.id].update(job)
+            else:
+                self.jobs[job.id] = job
+                new_job_ids.add(job.id)
+
+        missing_job_ids = old_job_ids.difference(parsed_job_ids)
+        for job_id in missing_job_ids:
+            term_print( 'Deleting %d' % job_id ) # TODO: remove this testing line if you see this note
+            del self.jobs[job_id]
+
+        new_job_ids_list = list(new_job_ids)
+        random.shuffle(new_job_ids_list)
+        for job_id in new_job_ids_list:
+            job = self.jobs[job_id]
+            if job.project == self.project and len(job.name) >= 10:
+                self.jobs_to_update.put(job_id)
+
+        # Get new qstat_data results from queue
+        while not self.updated_jobs_results.empty():
+            qstat_data = self.updated_jobs_results.get()
+            job_id = long( qstat_data['job_number'] )
+            self.jobs[job_id].set_qstat_data( qstat_data )
+
+    def __iter__(self):
+        self.sorted_job_ids = [
+            x for x,y in self.jobs.iteritems() if y.state != 'finished'
+        ]
+        self.sorted_job_ids.sort(reverse=True)
+        return self
+
+    # Python 3 compatibility
+    def __next__(self):
+        return self.next()
+
+    def next(self):
+        if len(self.sorted_job_ids) == 0:
+            raise StopIteration
+        return self.jobs[ self.sorted_job_ids.pop() ]
+
+def read_from_test_output(test_iteration):
     testing_output_dir = 'testing_output'
     assert( os.path.isdir( testing_output_dir ) )
     test_files = [
         os.path.join(testing_output_dir, f)
         for f in sorted(os.listdir(testing_output_dir))
+        if 'job_specific_output' not in f
     ]
 
-    with open(test_files[(test_iteration-1) % len(test_files)], 'r') as f:
+    term_print( test_files[test_iteration % len(test_files)] )
+    with open(test_files[test_iteration % len(test_files)], 'r') as f:
         return f.readlines()
 
 def term_print(string):
     global term
+    string = str(string)
     for split_string in string.split('\n'):
         print str(string) + term.clear_eol
 
@@ -182,59 +296,60 @@ def display_jobs(jobs, filter, display='{count:>7d} {job.user:12} {job.name}'):
         job, count = job_counts[user, name]
         term_print( display.format(**job_counts[user, name]) )
 
-def display_running_jobs(jobs, project=None):
-    if project is None:
+def display_running_jobs(jobs):
+    if jobs.project is None:
         term_print( "Currently running jobs:" )
         display_jobs(jobs, lambda j: j.state == 'r')
     else:
-        term_print( "Currently running jobs by {0} users:".format(project) )
-        display_jobs(jobs, lambda j: j.state == 'r' and j.project == project)
+        term_print( "Currently running jobs by {0} users:".format(jobs.project) )
+        display_jobs(jobs, lambda j: j.state == 'r' and j.project == jobs.project)
 
     term_print('') # spacer line
 
-def display_queued_jobs(jobs, project=None):
+def display_queued_jobs(jobs):
     filter = lambda j: j.state == 'qw'
     display = '{count:>7d} {job.user:12} {job.name} ({job.ja_task_id})'
 
-    if project is None:
+    if jobs.project is None:
         term_print( "Currently queued jobs:" )
         display_jobs(jobs, filter, display)
     else:
-        term_print( "Currently queued jobs by {0} users:".format(project) )
-        display_jobs(jobs, lambda j: filter(j) and j.project == project, display)
+        term_print( "Currently queued jobs by {0} users:".format(jobs.project) )
+        display_jobs(jobs, lambda j: filter(j) and j.project == jobs.project, display)
 
     term_print('') # spacer line
 
 
-def display_remaining_jobs(jobs, project=None):
+def display_remaining_jobs(jobs):
     filter = lambda j: j.state not in ('r', 'qw')
     display = '{count:>7d} {job.user:12} {job.name} ({job.state})'
 
-    if project is None:
+    if jobs.project is None:
         term_print( "Remaining jobs:" )
         display_jobs(jobs, filter, display)
     else:
-        term_print( "Remaining jobs by {0} users:".format(project) )
-        display_jobs(jobs, lambda j: filter(j) and j.project == project, display)
+        term_print( "Remaining jobs by {0} users:".format(jobs.project) )
+        display_jobs(jobs, lambda j: filter(j) and j.project == jobs.project, display)
 
 def run( project, testing_mode=False, interval=0 ):
     # Figure out what projects to display information for.  If the user
     # specifies one or more projects on the command line, use them.  Otherwise
     # use the projects the current user belongs to.
 
+    jobs = Jobs(testing_mode, project)
     while True:
-        jobs = query_jobs( testing_mode=testing_mode )
+        print term.clear()
+        jobs.update()
 
-        print term.clear
-        term.move(0, 0)
         term_print( time.strftime("%a, %d %b %Y %H:%M:%S ") )
-        display_running_jobs(jobs, project)
-        display_queued_jobs(jobs, project)
-        display_remaining_jobs(jobs, project)
+        display_running_jobs(jobs)
+        display_queued_jobs(jobs)
+        display_remaining_jobs(jobs)
 
         if float(interval) == 0.0:
             return
         else:
+            # Let's rest this thread
             time.sleep(float(interval))
 
 if __name__ == '__main__':
@@ -242,7 +357,7 @@ if __name__ == '__main__':
     args = docopt.docopt(__doc__)
 
     testing_mode = args['--test']
-    interval = args['--interval']
+    interval = float(args['--interval'])
     project = choose_project(args['--project'])
 
     run( project, testing_mode=testing_mode, interval=interval )
