@@ -232,7 +232,7 @@ def run( project, testing_mode=False, interval=0 ):
         display_queued_jobs(jobs, project)
         display_remaining_jobs(jobs, project)
 
-        if interval == 0:
+        if float(interval) == 0.0:
             return
         else:
             time.sleep(float(interval))
