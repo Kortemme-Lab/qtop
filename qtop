@@ -17,9 +17,17 @@ Options:
         the projects that user calling the program belongs to will be used.
         Specify '*' to see all projects.
 
+    --test
+        Instead of running qstat, parse from output files in the testing_output
+        directory
+
 """
 
 import subprocess, getpass, collections, itertools
+import os
+
+# Global variable (for testing behavior only)
+test_iteration = 0
 
 def sh(cmd):
     """
@@ -120,14 +128,31 @@ class Job (object):
 
 
 
-def query_jobs():
+def query_jobs(testing_mode=False):
     jobs = []
 
-    for line in sh('qstat -ext -u \\*').split('\n')[2:]:
+    if testing_mode:
+        input_data = read_from_test_output()
+    else:
+        input_data = sh('qstat -ext -u \\*').split('\n')
+
+    for line in input_data[2:]:
         job = Job(line)
         jobs.append(job)
 
     return jobs
+
+def read_from_test_output():
+    global test_iteration
+    test_iteration += 1
+    testing_output_dir = 'testing_output'
+    assert( os.path.isdir( testing_output_dir ) )
+    test_files = [
+        os.path.join(testing_output_dir, f)
+        for f in sorted(os.listdir(testing_output_dir))
+    ]
+    with open(test_files[test_iteration-1 % len(test_files)], 'r') as f:
+        return f.readlines()
 
 def display_jobs(jobs, filter, display='{count:>7d} {job.user:12} {job.name}'):
     job_counts = {}
@@ -187,11 +212,13 @@ if __name__ == '__main__':
     import docopt
     args = docopt.docopt(__doc__)
 
+    testing_mode = args['--test']
+
     # Figure out what projects to display information for.  If the user
     # specifies one or more projects on the command line, use them.  Otherwise
     # use the projects the current user belongs to.
 
-    jobs = query_jobs()
+    jobs = query_jobs( testing_mode=testing_mode )
     project = choose_project(args['--project'])
 
     display_running_jobs(jobs, project)
