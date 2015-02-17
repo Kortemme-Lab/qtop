@@ -17,6 +17,10 @@ Options:
         the projects that user calling the program belongs to will be used.
         Specify '*' to see all projects.
 
+    -i --interval=INTERVAL
+        Run the program in interactive mode, refreshing qstat data every
+        interval seconds [default: 0]
+
     --test
         Instead of running qstat, parse from output files in the testing_output
         directory
@@ -25,6 +29,9 @@ Options:
 
 import subprocess, getpass, collections, itertools
 import os
+import time
+from blessings import Terminal
+term = Terminal()
 
 # Global variable (for testing behavior only)
 test_iteration = 0
@@ -151,8 +158,14 @@ def read_from_test_output():
         os.path.join(testing_output_dir, f)
         for f in sorted(os.listdir(testing_output_dir))
     ]
-    with open(test_files[test_iteration-1 % len(test_files)], 'r') as f:
+
+    with open(test_files[(test_iteration-1) % len(test_files)], 'r') as f:
         return f.readlines()
+
+def term_print(string):
+    global term
+    for split_string in string.split('\n'):
+        print str(string) + term.clear_eol
 
 def display_jobs(jobs, filter, display='{count:>7d} {job.user:12} {job.name}'):
     job_counts = {}
@@ -163,64 +176,73 @@ def display_jobs(jobs, filter, display='{count:>7d} {job.user:12} {job.name}'):
         job_counts[job_name]['count'] += 1
 
     if not job_counts:
-        print '  none'
-        return
+        term_print( '  none' )
 
     for user, name in sorted(job_counts):
         job, count = job_counts[user, name]
-        print display.format(**job_counts[user, name])
+        term_print( display.format(**job_counts[user, name]) )
 
 def display_running_jobs(jobs, project=None):
     if project is None:
-        print "Currently running jobs:"
+        term_print( "Currently running jobs:" )
         display_jobs(jobs, lambda j: j.state == 'r')
-        print
     else:
-        print "Currently running jobs by {0} users:".format(project)
+        term_print( "Currently running jobs by {0} users:".format(project) )
         display_jobs(jobs, lambda j: j.state == 'r' and j.project == project)
-        print
+
+    term_print('') # spacer line
 
 def display_queued_jobs(jobs, project=None):
     filter = lambda j: j.state == 'qw'
     display = '{count:>7d} {job.user:12} {job.name} ({job.ja_task_id})'
 
     if project is None:
-        print "Currently queued jobs:"
+        term_print( "Currently queued jobs:" )
         display_jobs(jobs, filter, display)
-        print
     else:
-        print "Currently queued jobs by {0} users:".format(project)
+        term_print( "Currently queued jobs by {0} users:".format(project) )
         display_jobs(jobs, lambda j: filter(j) and j.project == project, display)
-        print
+
+    term_print('') # spacer line
+
 
 def display_remaining_jobs(jobs, project=None):
     filter = lambda j: j.state not in ('r', 'qw')
     display = '{count:>7d} {job.user:12} {job.name} ({job.state})'
 
     if project is None:
-        print "Remaining jobs:"
+        term_print( "Remaining jobs:" )
         display_jobs(jobs, filter, display)
-        print
     else:
-        print "Remaining jobs by {0} users:".format(project)
+        term_print( "Remaining jobs by {0} users:".format(project) )
         display_jobs(jobs, lambda j: filter(j) and j.project == project, display)
-        print
 
+def run( project, testing_mode=False, interval=0 ):
+    # Figure out what projects to display information for.  If the user
+    # specifies one or more projects on the command line, use them.  Otherwise
+    # use the projects the current user belongs to.
 
+    while True:
+        jobs = query_jobs( testing_mode=testing_mode )
+
+        print term.clear
+        term.move(0, 0)
+        term_print( time.strftime("%a, %d %b %Y %H:%M:%S ") )
+        display_running_jobs(jobs, project)
+        display_queued_jobs(jobs, project)
+        display_remaining_jobs(jobs, project)
+
+        if interval == 0:
+            return
+        else:
+            time.sleep(float(interval))
 
 if __name__ == '__main__':
     import docopt
     args = docopt.docopt(__doc__)
 
     testing_mode = args['--test']
+    interval = args['--interval']
+    project = args['--project']
 
-    # Figure out what projects to display information for.  If the user
-    # specifies one or more projects on the command line, use them.  Otherwise
-    # use the projects the current user belongs to.
-
-    jobs = query_jobs( testing_mode=testing_mode )
-    project = choose_project(args['--project'])
-
-    display_running_jobs(jobs, project)
-    display_queued_jobs(jobs, project)
-    display_remaining_jobs(jobs, project)
+    run( project, testing_mode=testing_mode, interval=interval )
