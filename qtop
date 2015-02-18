@@ -86,34 +86,19 @@ def choose_project(project=None, user=None):
                 grep default_project |
                 awk '{{print $2}}' ''')
 
-
-class Job (object):
-    def __init__(self, qstat_line):
-        fields = qstat_line.split()
-        try:
-            self.update_from_fields(fields)
-        except:
-            print 'Error parsing qstat line:'
-            print '  ', qstat_line
-            raise
-
-        # This is everything but "name" so far
+class Task (object):
+    # Each task will have many subtasks
+    def __init__ (self, task_id, fields):
+        self.id = task_id
+        self.parse_task_fields(fields)
         self.basic_attrs_to_update = [
-            'id', 'prior', 'ntckts', 'user', 'project',
-            'department', 'state', 'cpu', 'mem', 'io',
-            'tckts', 'ovrts', 'otckt', 'ftckt', 'stckt',
-            'share', 'queue', 'slots', 'ja_task_id',
+            'state', 'cpu', 'mem', 'io',
+            'tckts', 'ovrts', 'otckt',
+            'ftckt', 'stckt', 'share',
+            'queue', 'slots',
         ]
 
-    def update_from_fields(self, fields):
-        self.id = long(fields[0])
-        self.prior = fields[1]
-        self.ntckts = fields[2]
-        self.name = fields[3]
-        self.short_name = self.name
-        self.user = fields[4]
-        self.project = fields[5]
-        self.department = fields[6]
+    def parse_task_fields(self, fields):
         self.state = fields[7]
 
         if 'r' in self.state:
@@ -128,8 +113,6 @@ class Job (object):
             self.share = fields[16]
             self.queue = fields[17]
             self.slots = fields[18]
-            try: self.ja_task_id = fields[16]
-            except IndexError: self.ja_task_id = ''
 
         else:
             self.cpu = None
@@ -143,12 +126,126 @@ class Job (object):
             self.share = fields[13]
             self.queue = None
             self.slots = fields[14]
-            try: self.ja_task_id = fields[15]
-            except IndexError: self.ja_task_id = ''
 
     def update(self, other):
         for attr in self.basic_attrs_to_update:
             setattr(self, attr, getattr(other, attr))
+
+class Tasks (object):
+    # Each job only holds one Tasks object, but it is split
+    # apart for extra readability
+    def __init__(self, fields):
+        self.all_task_ids = set()
+        self.recently_touched_task_ids = set()
+        self.active_task_ids = {} # Task IDs still appearing in output
+        self.inactive_task_ids = {} # No longer appearing in output
+        self.parse_tasks_fields(fields)
+
+    def parse_tasks_fields(self, fields):
+        ja_task_id = fields[-1]
+
+        if len(ja_task_id) > 0:
+            new_task_ids = parse_ja_task_id(ja_task_id)
+        else:
+            new_task_ids = set()
+
+        self.all_task_ids.union( new_task_ids )
+        for task_id in new_task_ids:
+            self.update_task( Task(task_id, fields) )
+
+    def update_task(self, task):
+        self.all_task_ids.add(task.id)
+        self.recently_touched_task_ids.add(task.id)
+        if task.id in self.active_task_ids:
+            self.active_task_ids[task.id].update(task)
+        elif task.id in self.inactive_task_ids:
+            self.active_task_ids[task.id] = self.inactive_task_ids[task.id]
+            del self.inactive_task_ids[task.id]
+            self.active_task_ids[task.id].update(task)
+        else:
+            self.active_task_ids[task.id] = task
+
+    def update(self, other):
+        self.all_task_ids.union( other.all_task_ids )
+        self.recently_touched_task_ids.union( other.recently_touched_task_ids )
+
+        # Update active tasks dict
+        for task_id, task in other.active_task_ids.iteritems():
+            if task_id in self.active_task_ids:
+                self.active_task_ids[task_id].update(task)
+            else:
+                self.active_task_ids[task_id] = task
+
+        # Update inactive tasks dict
+        for task_id, task in other.inactive_task_ids.iteritems():
+            if task_id in self.inactive_task_ids:
+                self.inactive_task_ids[task_id].update(task)
+            else:
+                self.inactive_task_ids[task_id] = task
+
+    def mark_inactive_tasks(self):
+        # Create a separate list of IDs ahead of time,
+        # because we may delete some and modify the dict
+        # as we go, which would break a direct iterator
+        task_ids = self.active_task_ids.keys()
+
+        for task_id in task_ids:
+            task = self.active_task_ids[task_id]
+            if task_id not in self.recently_touched_task_ids:
+                del self.active_task_ids[task_id]
+                self.inactive_task_ids[task_id] = task
+        self.recently_touched_task_ids = set()
+
+def parse_ja_task_id(ja_task_id):
+    task_ids = set()
+    for s in ja_task_id.split(','):
+        if '-' in s:
+            assert( ':' in s )
+            range_str, step = s.strip().split(':')
+            range_start, range_end = range_str.split('-')
+            for x in xrange( int(range_start), int(range_end)+1, int(step) ):
+                task_ids.add(x)
+        else:
+            task_ids.add( int(s) )
+
+    return task_ids
+
+class Job (object):
+    def __init__(self, qstat_line):
+        fields = qstat_line.split()
+        try:
+            self.parse_job_fields(fields)
+        except:
+            print 'Error parsing qstat line:'
+            print '  ', qstat_line
+            raise
+
+        self.tasks = Tasks(fields)
+
+        # When a job object is updated, these will all be copied
+        # from the new job to this object
+        self.basic_attrs_to_update = [
+            'id', 'prior', 'ntckts', 'user', 'project',
+            'department',
+            'short_name'
+        ]
+
+        self.state = None
+
+    def parse_job_fields(self, fields):
+        self.id = long(fields[0])
+        self.prior = fields[1]
+        self.ntckts = fields[2]
+        self.name = fields[3]
+        self.short_name = self.name
+        self.user = fields[4]
+        self.project = fields[5]
+        self.department = fields[6]
+
+    def update(self, other):
+        for attr in self.basic_attrs_to_update:
+            setattr(self, attr, getattr(other, attr))
+        self.tasks.update(other.tasks)
 
     def set_qstat_data(self, qstat_data):
         self.qstat_data = qstat_data
@@ -157,7 +254,10 @@ class Job (object):
             self.full_name = qstat_data['job_name']
             self.name = self.full_name
 
-def update_job_data(job_id_queue, results_queue, testing_mode):
+    def after_update(self):
+        self.tasks.mark_inactive_tasks()
+
+def enhance_job_data(job_id_queue, results_queue, testing_mode):
     while True:
         if not job_id_queue.empty():
             job_id = job_id_queue.get()
@@ -183,9 +283,9 @@ def update_job_data(job_id_queue, results_queue, testing_mode):
                         qstat_data[fields[0].strip()] = fields[1].strip()
                 if len(qstat_data) > 0:
                     results_queue.put(qstat_data)
-                    time.sleep(2.0) # Only run qstat -j every n seconds
+                    time.sleep(2.0) # Only run qstat -j every this n seconds
         else:
-            time.sleep(0.1) # Check queue more often
+            time.sleep(0.1) # Check queue more often, as this is easy
 
 class Jobs (object):
     def __init__(self, testing_mode, project):
@@ -197,7 +297,7 @@ class Jobs (object):
         self.jobs_to_update = Queue()
         self.updated_jobs_results = Queue()
         self.job_data_updater = Thread(
-            target=update_job_data,
+            target = enhance_job_data,
             args = (
                 self.jobs_to_update,
                 self.updated_jobs_results,
@@ -205,6 +305,27 @@ class Jobs (object):
         )
         self.job_data_updater.daemon = True
         self.job_data_updater.start()
+
+    def running(self, project=None):
+        # TODO: return a list of lists, each row is current output
+        # Each listrow is data for columns
+        # Columns: Number of jobs (with equal names), number of tasks (total), script name
+        if not project:
+            project = self.project
+
+    def queued(self, project=None):
+        if not project:
+            project = self.project
+
+    def remaining(self, project=None):
+        if not project:
+            project = self.project
+
+    def num_users(self):
+        users = set()
+        for job in self.jobs.values():
+            users.add(job.user)
+        return len(users)
 
     def update(self):
         self.jobs = {}
@@ -218,20 +339,18 @@ class Jobs (object):
         new_job_ids = set()
         old_job_ids = set(self.jobs.keys())
         for line in input_data[2:]:
-            print line
             job = Job(line)
             parsed_job_ids.add(job.id)
             if job.id in self.jobs:
-                print job.id
-                self.jobs[job.id] = self.jobs[job.id].update(job)
+                self.jobs[job.id].update(job)
             else:
                 self.jobs[job.id] = job
                 new_job_ids.add(job.id)
 
         missing_job_ids = old_job_ids.difference(parsed_job_ids)
         for job_id in missing_job_ids:
-            term_print( 'Deleting %d' % job_id ) # TODO: remove this testing line if you see this note
-            del self.jobs[job_id]
+            assert( job_id in self.jobs )
+            self.jobs[job_id].state = 'finished'
 
         new_job_ids_list = list(new_job_ids)
         random.shuffle(new_job_ids_list)
@@ -245,6 +364,10 @@ class Jobs (object):
             qstat_data = self.updated_jobs_results.get()
             job_id = long( qstat_data['job_number'] )
             self.jobs[job_id].set_qstat_data( qstat_data )
+
+        # Mark inactive tasks
+        for job in self.jobs.values():
+            job.after_update()
 
     def __iter__(self):
         self.sorted_job_ids = [
@@ -281,55 +404,64 @@ def term_print(string):
     for split_string in string.split('\n'):
         print str(string) + term.clear_eol
 
-def display_jobs(jobs, filter, display='{count:>7d} {job.user:12} {job.name}'):
-    job_counts = {}
+# def display_jobs(jobs, filter, display='{count:>7d} {job.user:12} {job.name}'):
+#     job_counts = {}
 
-    for job in itertools.ifilter(filter, jobs):
-        job_name = job.user, job.name
-        job_counts.setdefault(job_name, {'job': job, 'count': 0})
-        job_counts[job_name]['count'] += 1
+#     for job in itertools.ifilter(filter, jobs):
+#         job_name = job.user, job.name
+#         job_counts.setdefault(job_name, {'job': job, 'count': 0})
+#         job_counts[job_name]['count'] += 1
 
-    if not job_counts:
-        term_print( '  none' )
+#     if not job_counts:
+#         term_print( '  none' )
 
-    for user, name in sorted(job_counts):
-        job, count = job_counts[user, name]
-        term_print( display.format(**job_counts[user, name]) )
+#     for user, name in sorted(job_counts):
+#         job, count = job_counts[user, name]
+#         term_print( display.format(**job_counts[user, name]) )
+
+def display(data):
+    pass
 
 def display_running_jobs(jobs):
     if jobs.project is None:
         term_print( "Currently running jobs:" )
-        display_jobs(jobs, lambda j: j.state == 'r')
+        # display_jobs(jobs, lambda j: j.state == 'r')
     else:
-        term_print( "Currently running jobs by {0} users:".format(jobs.project) )
-        display_jobs(jobs, lambda j: j.state == 'r' and j.project == jobs.project)
+        term_print( "Currently running jobs by {0} users:".format(jobs.num_users()) )
+        # display_jobs(jobs, lambda j: j.state == 'r' and j.project == jobs.project)
+
+    display( jobs.running() )
 
     term_print('') # spacer line
 
 def display_queued_jobs(jobs):
-    filter = lambda j: j.state == 'qw'
-    display = '{count:>7d} {job.user:12} {job.name} ({job.ja_task_id})'
+    # filter = lambda j: j.state == 'qw'
+    # display = '{count:>7d} {job.user:12} {job.name} ({job.ja_task_id})'
 
     if jobs.project is None:
         term_print( "Currently queued jobs:" )
-        display_jobs(jobs, filter, display)
+        # display_jobs(jobs, filter, display)
     else:
-        term_print( "Currently queued jobs by {0} users:".format(jobs.project) )
-        display_jobs(jobs, lambda j: filter(j) and j.project == jobs.project, display)
+        term_print( "Currently queued jobs by {0} users:".format(jobs.num_users()) )
+        # display_jobs(jobs, lambda j: filter(j) and j.project == jobs.project, display)
+
+    display( jobs.queued() )
 
     term_print('') # spacer line
 
 
 def display_remaining_jobs(jobs):
-    filter = lambda j: j.state not in ('r', 'qw')
-    display = '{count:>7d} {job.user:12} {job.name} ({job.state})'
+    # filter = lambda j: j.state not in ('r', 'qw')
+    # display = '{count:>7d} {job.user:12} {job.name} ({job.state})'
 
     if jobs.project is None:
         term_print( "Remaining jobs:" )
-        display_jobs(jobs, filter, display)
+        # display_jobs(jobs, filter, display)
     else:
-        term_print( "Remaining jobs by {0} users:".format(jobs.project) )
-        display_jobs(jobs, lambda j: filter(j) and j.project == jobs.project, display)
+        term_print( "Remaining jobs by {0} users:".format(jobs.num_users()) )
+        # display_jobs(jobs, lambda j: filter(j) and j.project == jobs.project, display)
+
+    display( jobs.remaining(project) )
 
 def run( project, testing_mode=False, interval=0 ):
     # Figure out what projects to display information for.  If the user
