@@ -342,7 +342,7 @@ class Jobs (object):
 
         self.old_job_ids = set()
 
-    def count_jobs_by_name(self, states, project=None, invert_logic=False):
+    def count_jobs_by_name(self, project=None):
         if not project:
             project = self.project
 
@@ -356,29 +356,32 @@ class Jobs (object):
                 'lab_q_tasks' : 0,
                 'long_q_tasks' : 0,
                 'short_q_tasks' : 0,
+                'waiting_q_tasks' : 0,
+                'other_q_tasks' : 0,
             }
-            def count_task(task, task_counts):
-                if task.queue.startswith('lab.q'):
-                    task_counts['lab_q_tasks'] += 1
-                elif task.queue.startswith('long.q'):
-                    task_counts['long_q_tasks'] += 1
-                elif task.queue.startswith('short.q'):
-                    task_counts['short_q_tasks'] += 1
-                else:
-                    raise Exception(
-                        "Can't recognize task queue %s (job %d task %d)" % (task.queue, job.id, task.id)
-                    )
-                return task_counts
 
+            # Iterate through all tasks in job and count active ones
             for task in job.tasks.active_tasks.values():
-                if invert_logic:
-                    if task.state not in states:
-                        task_counts = count_task(task, task_counts)
+                if task.state == 'r':
+                    if task.queue.startswith('lab.q'):
+                        task_counts['lab_q_tasks'] += 1
+                    elif task.queue.startswith('long.q'):
+                        task_counts['long_q_tasks'] += 1
+                    elif task.queue.startswith('short.q'):
+                        task_counts['short_q_tasks'] += 1
+                    else:
+                        raise Exception(
+                            "Couldn't recognize queue type %s (job %d task %d)" % (task.queue, job.id, task.id)
+                        )
+                elif task.state == 'qw':
+                    task_counts['waiting_q_tasks'] += 1
                 else:
-                    if task.state in states:
-                        task_counts = count_task(task, task_counts)
+                    task_counts['other_q_tasks'] += 1
 
-            all_tasks = task_counts['lab_q_tasks'] + task_counts['short_q_tasks'] + task_counts['long_q_tasks']
+            # If we counted any active tasks, then count them for this job
+            # Job counts are based on a unique job short name and username (tuple)
+            all_tasks = task_counts['waiting_q_tasks'] + task_counts['lab_q_tasks'] + task_counts['short_q_tasks'] + task_counts['long_q_tasks'] + task_counts['other_q_tasks']
+            running_tasks = task_counts['lab_q_tasks'] + task_counts['short_q_tasks'] + task_counts['long_q_tasks']
             if all_tasks > 0:
                 short_name = job.short_name
                 user = job.user
@@ -388,17 +391,23 @@ class Jobs (object):
                 if job_tup in count_dict:
                     count_dict[job_tup]['jobs'] += 1
                     count_dict[job_tup]['all_tasks'] += all_tasks
+                    count_dict[job_tup]['running_tasks'] += running_tasks
                     count_dict[job_tup]['lab_q_tasks'] += task_counts['lab_q_tasks']
                     count_dict[job_tup]['short_q_tasks'] += task_counts['short_q_tasks']
                     count_dict[job_tup]['long_q_tasks'] += task_counts['long_q_tasks']
                     count_dict[job_tup]['full_names'].add(job.full_name)
+                    count_dict[job_tup]['waiting_q_tasks'] += task_counts['waiting_q_tasks']
+                    count_dict[job_tup]['other_q_tasks'] += task_counts['other_q_tasks']
                 else:
                     count_dict[job_tup] = {
                         'jobs' : 1,
                         'all_tasks' : all_tasks,
+                        'running_tasks' : running_tasks,
                         'lab_q_tasks' : task_counts['lab_q_tasks'],
                         'short_q_tasks' : task_counts['short_q_tasks'],
                         'long_q_tasks' : task_counts['long_q_tasks'],
+                        'waiting_q_tasks' : task_counts['waiting_q_tasks'],
+                        'other_q_tasks' : task_counts['other_q_tasks'],
                         'full_names' : set([job.full_name]),
                     }
 
@@ -435,11 +444,13 @@ class Jobs (object):
         for job_tup in count_dict:
             job_short_name, job_user = job_tup
             return_list.append( (
-                count_dict[job_tup]['all_tasks'],
+                count_dict[job_tup]['running_tasks'],
                 count_dict[job_tup]['jobs'],
                 count_dict[job_tup]['lab_q_tasks'],
                 count_dict[job_tup]['long_q_tasks'],
                 count_dict[job_tup]['short_q_tasks'],
+                count_dict[job_tup]['waiting_q_tasks'],
+                count_dict[job_tup]['other_q_tasks'],
                 job_user,
                 count_dict[job_tup]['common_full_name'],
             ) )
@@ -447,18 +458,6 @@ class Jobs (object):
         return_list.sort(reverse=True)
         self.counted_users = users
         return return_list
-
-    def running(self, project=None):
-        # TODO: return a list of lists, each row is current output
-        # Each listrow is data for columns
-        # Columns: Number of jobs (with equal names), number of tasks (total), script name
-        return self.count_jobs_by_name(['r'], project=project)
-
-    def queued(self, project=None):
-        return self.count_jobs_by_name(['qw'], project=project)
-
-    def remaining(self, project=None):
-        return self.count_jobs_by_name(['r', 'qw'], project=project, invert_logic=True)
 
     def num_users(self, project=None):
         if not project:
@@ -558,13 +557,20 @@ def display(data):
     for row in strings_to_print:
         row_str = ''
         for i, x in enumerate(row):
-            row_str += '%s ' % x.ljust(max_lengths[i])
+            if i >= len(row) - 2:
+                row_str += '%s ' % x.ljust(max_lengths[i])
+            else:
+                row_str += '%s ' % x.rjust(max_lengths[i])
+
         term_printer.queue(
             row_str[:-1] # Remove trailing space
         )
 
-def display_running_jobs(jobs):
-    running_jobs = jobs.running()
+def display_jobs(jobs):
+    job_display_list = jobs.count_jobs_by_name()
+
+    if len(job_display_list) == 0:
+        return
 
     if jobs.project:
         term_printer.queue( "Currently running jobs by {0} {1} users:".format( len(jobs.counted_users), jobs.project ) )
@@ -572,39 +578,16 @@ def display_running_jobs(jobs):
         term_printer.queue( "Currently running jobs by {0} users:".format( len(jobs.counted_users) ) )
 
     display_list = [ [
-        'Tasks', 'jobs',
+        'Running Tasks', 'Jobs',
         'lab.q', 'long.q', 'short.q',
-        'User', 'Name',
+        'Queued Tasks',
+        'Other Tasks',
+        'User',
+        'Name',
     ] ]
 
-    display_list.extend( running_jobs )
+    display_list.extend( job_display_list )
     display( display_list )
-
-    term_printer.queue('') # spacer line
-
-def display_queued_jobs(jobs):
-    # filter = lambda j: j.state == 'qw'
-    # display = '{count:>7d} {job.user:12} {job.name} ({job.ja_task_id})'
-
-    queued_jobs = jobs.queued()
-    # display_jobs(jobs, filter, display)
-    term_printer.queue( "Currently queued jobs by {0} users:".format(len(jobs.counted_users)) )
-    # display_jobs(jobs, lambda j: filter(j) and j.project == jobs.project, display)
-
-    display( queued_jobs )
-
-    term_printer.queue('') # spacer line
-
-
-def display_remaining_jobs(jobs):
-    # filter = lambda j: j.state not in ('r', 'qw')
-    # display = '{count:>7d} {job.user:12} {job.name} ({job.state})'
-
-    # display_jobs(jobs, filter, display)
-    term_printer.queue( "Remaining jobs by {0} users:".format(jobs.num_users()) )
-    # display_jobs(jobs, lambda j: filter(j) and j.project == jobs.project, display)
-
-    display( jobs.remaining(project) )
 
 def run( project, testing_mode=False, interval=0 ):
     # Figure out what projects to display information for.  If the user
@@ -616,9 +599,7 @@ def run( project, testing_mode=False, interval=0 ):
         jobs.update()
 
         term_printer.queue( time.strftime("%a, %d %b %Y %H:%M:%S ") )
-        display_running_jobs(jobs)
-        # display_queued_jobs(jobs)
-        # display_remaining_jobs(jobs)
+        display_jobs(jobs)
         term_printer.finalize()
 
         if float(interval) == 0.0:
