@@ -326,38 +326,96 @@ class Jobs (object):
             if project and job.project != project:
                 continue
 
-            active_tasks = 0
+            task_counts = {
+                'lab_q_tasks' : 0,
+                'long_q_tasks' : 0,
+                'short_q_tasks' : 0,
+            }
+            def count_task(task, task_counts):
+                if task.queue.startswith('lab.q'):
+                    task_counts['lab_q_tasks'] += 1
+                elif task.queue.startswith('long.q'):
+                    task_counts['long_q_tasks'] += 1
+                elif task.queue.startswith('short.q'):
+                    task_counts['short_q_tasks'] += 1
+                else:
+                    raise Exception(
+                        "Can't recognize task queue %s (job %d task %d)" % (task.queue, job.id, task.id)
+                    )
+                return task_counts
+
             for task in job.tasks.active_tasks.values():
                 if invert_logic:
                     if task.state not in states:
-                        active_tasks += 1
+                        task_counts = count_task(task, task_counts)
                 else:
                     if task.state in states:
-                        active_tasks += 1
+                        task_counts = count_task(task, task_counts)
 
-            if active_tasks > 0:
-                name = job.name
+            all_tasks = task_counts['lab_q_tasks'] + task_counts['short_q_tasks'] + task_counts['long_q_tasks']
+            if all_tasks > 0:
+                short_name = job.short_name
                 user = job.user
                 users.add(user)
-                job_tup = (name, user)
+                job_tup = (short_name, user)
 
                 if job_tup in count_dict:
                     count_dict[job_tup]['jobs'] += 1
-                    count_dict[job_tup]['tasks'] += active_tasks
+                    count_dict[job_tup]['all_tasks'] += all_tasks
+                    count_dict[job_tup]['lab_q_tasks'] += task_counts['lab_q_tasks']
+                    count_dict[job_tup]['short_q_tasks'] += task_counts['short_q_tasks']
+                    count_dict[job_tup]['long_q_tasks'] += task_counts['long_q_tasks']
+                    count_dict[job_tup]['full_names'].add(job.full_name)
                 else:
                     count_dict[job_tup] = {
                         'jobs' : 1,
-                        'tasks' : active_tasks,
+                        'all_tasks' : all_tasks,
+                        'lab_q_tasks' : task_counts['lab_q_tasks'],
+                        'short_q_tasks' : task_counts['short_q_tasks'],
+                        'long_q_tasks' : task_counts['long_q_tasks'],
+                        'full_names' : set([job.full_name]),
                     }
+
+        # Process full names to be common string by position
+        # It could be cool to make this instead add wildcards more fancily
+        for job_tup, inner_dict in count_dict.iteritems():
+            if None in inner_dict['full_names']:
+                inner_dict['full_names'].remove(None)
+
+            if len(inner_dict['full_names']) == 0:
+                inner_dict['common_full_name'] = job_tup[0]
+                continue
+
+            full_names = [
+                y for x, y in sorted(
+                    [(len(name), name) for name in inner_dict['full_names']
+                 ], reverse=True )
+            ]
+
+            common_full_name = ''
+            for i, char in enumerate(full_names[0]):
+                add_char = True
+                for full_name in full_names[1:]:
+                    if len(full_name) <= i or char != full_name[i]:
+                        add_char = False
+                if add_char:
+                    common_full_name += char
+                elif common_full_name[-1] != '*':
+                    common_full_name += '*'
+
+            inner_dict['common_full_name'] = common_full_name
 
         return_list = []
         for job_tup in count_dict:
-            job_name, job_user = job_tup
+            job_short_name, job_user = job_tup
             return_list.append( (
+                count_dict[job_tup]['all_tasks'],
                 count_dict[job_tup]['jobs'],
-                count_dict[job_tup]['tasks'],
+                count_dict[job_tup]['lab_q_tasks'],
+                count_dict[job_tup]['long_q_tasks'],
+                count_dict[job_tup]['short_q_tasks'],
                 job_user,
-                job_name,
+                count_dict[job_tup]['common_full_name'],
             ) )
 
         return_list.sort(reverse=True)
@@ -494,7 +552,9 @@ def display_running_jobs(jobs):
         term_print( "Currently running jobs by {0} users:".format( len(jobs.counted_users) ) )
 
     display_list = [ [
-        'Jobs', 'Tasks', 'User', 'Job Name'
+        'Tasks', 'jobs',
+        'lab.q', 'long.q', 'short.q',
+        'User', 'Name',
     ] ]
 
     display_list.extend( running_jobs )
