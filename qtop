@@ -34,7 +34,30 @@ import random
 from Queue import Queue
 from threading import Thread
 from blessings import Terminal
-term = Terminal()
+
+class TermPrinter(object):
+    def __init__(self):
+        self.term = Terminal()
+        self.string_queue = []
+
+    def queue(self, string):
+        self.string_queue.append( str(string) )
+
+    def finalize(self):
+        print self.term.clear()
+
+        line_count = 0
+        for string in self.string_queue:
+            for split_string in string.split('\n'):
+                if line_count == 0:
+                    print self.term.move(0, 0) + split_string + self.term.clear_eol
+                else:
+                    print split_string + self.term.clear_eol
+                line_count += 1
+
+        self.string_queue = []
+
+term_printer = TermPrinter()
 
 def sh(cmd):
     """
@@ -511,15 +534,9 @@ def read_from_test_output(test_iteration):
         if 'job_specific_output' not in f
     ]
 
-    term_print( test_files[test_iteration % len(test_files)] )
+    term_printer.queue( test_files[test_iteration % len(test_files)] )
     with open(test_files[test_iteration % len(test_files)], 'r') as f:
         return f.readlines()
-
-def term_print(string):
-    global term
-    string = str(string)
-    for split_string in string.split('\n'):
-        print str(string) + term.clear_eol
 
 def display(data):
     max_lengths = []
@@ -539,7 +556,7 @@ def display(data):
         row_str = ''
         for i, x in enumerate(row):
             row_str += '%s ' % x.ljust(max_lengths[i])
-        term_print(
+        term_printer.queue(
             row_str[:-1] # Remove trailing space
         )
 
@@ -547,9 +564,9 @@ def display_running_jobs(jobs):
     running_jobs = jobs.running()
 
     if jobs.project:
-        term_print( "Currently running jobs by {0} {1} users:".format( len(jobs.counted_users), jobs.project ) )
+        term_printer.queue( "Currently running jobs by {0} {1} users:".format( len(jobs.counted_users), jobs.project ) )
     else:
-        term_print( "Currently running jobs by {0} users:".format( len(jobs.counted_users) ) )
+        term_printer.queue( "Currently running jobs by {0} users:".format( len(jobs.counted_users) ) )
 
     display_list = [ [
         'Tasks', 'jobs',
@@ -560,7 +577,7 @@ def display_running_jobs(jobs):
     display_list.extend( running_jobs )
     display( display_list )
 
-    term_print('') # spacer line
+    term_printer.queue('') # spacer line
 
 def display_queued_jobs(jobs):
     # filter = lambda j: j.state == 'qw'
@@ -568,12 +585,12 @@ def display_queued_jobs(jobs):
 
     queued_jobs = jobs.queued()
     # display_jobs(jobs, filter, display)
-    term_print( "Currently queued jobs by {0} users:".format(len(jobs.counted_users)) )
+    term_printer.queue( "Currently queued jobs by {0} users:".format(len(jobs.counted_users)) )
     # display_jobs(jobs, lambda j: filter(j) and j.project == jobs.project, display)
 
     display( queued_jobs )
 
-    term_print('') # spacer line
+    term_printer.queue('') # spacer line
 
 
 def display_remaining_jobs(jobs):
@@ -581,7 +598,7 @@ def display_remaining_jobs(jobs):
     # display = '{count:>7d} {job.user:12} {job.name} ({job.state})'
 
     # display_jobs(jobs, filter, display)
-    term_print( "Remaining jobs by {0} users:".format(jobs.num_users()) )
+    term_printer.queue( "Remaining jobs by {0} users:".format(jobs.num_users()) )
     # display_jobs(jobs, lambda j: filter(j) and j.project == jobs.project, display)
 
     display( jobs.remaining(project) )
@@ -593,13 +610,13 @@ def run( project, testing_mode=False, interval=0 ):
 
     jobs = Jobs(testing_mode, project)
     while True:
-        print term.clear()
         jobs.update()
 
-        term_print( time.strftime("%a, %d %b %Y %H:%M:%S ") )
+        term_printer.queue( time.strftime("%a, %d %b %Y %H:%M:%S ") )
         display_running_jobs(jobs)
         # display_queued_jobs(jobs)
         # display_remaining_jobs(jobs)
+        term_printer.finalize()
 
         if float(interval) == 0.0:
             return
