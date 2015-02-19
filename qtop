@@ -68,7 +68,6 @@ def sh(cmd):
         raise error
     return stdout.strip()
 
-
 def choose_user(user=None):
     if user is not None:
         return user
@@ -137,8 +136,8 @@ class Tasks (object):
     def __init__(self, fields):
         self.all_task_ids = set()
         self.recently_touched_task_ids = set()
-        self.active_task_ids = {} # Task IDs still appearing in output
-        self.inactive_task_ids = {} # No longer appearing in output
+        self.active_tasks = {} # Task IDs still appearing in output
+        self.inactive_tasks = {} # No longer appearing in output
         self.parse_tasks_fields(fields)
 
     def parse_tasks_fields(self, fields):
@@ -149,51 +148,59 @@ class Tasks (object):
         else:
             new_task_ids = set()
 
-        self.all_task_ids.union( new_task_ids )
+        self.all_task_ids.update( new_task_ids )
         for task_id in new_task_ids:
             self.update_task( Task(task_id, fields) )
 
     def update_task(self, task):
         self.all_task_ids.add(task.id)
         self.recently_touched_task_ids.add(task.id)
-        if task.id in self.active_task_ids:
-            self.active_task_ids[task.id].update(task)
-        elif task.id in self.inactive_task_ids:
-            self.active_task_ids[task.id] = self.inactive_task_ids[task.id]
-            del self.inactive_task_ids[task.id]
-            self.active_task_ids[task.id].update(task)
+        if task.id in self.active_tasks:
+            self.active_tasks[task.id].update(task)
+        elif task.id in self.inactive_tasks:
+            self.active_tasks[task.id] = self.inactive_tasks[task.id]
+            del self.inactive_tasks[task.id]
+            self.active_tasks[task.id].update(task)
         else:
-            self.active_task_ids[task.id] = task
+            self.active_tasks[task.id] = task
 
     def update(self, other):
-        self.all_task_ids.union( other.all_task_ids )
-        self.recently_touched_task_ids.union( other.recently_touched_task_ids )
+        self.all_task_ids.update( other.all_task_ids )
+        self.recently_touched_task_ids.update( other.recently_touched_task_ids )
 
         # Update active tasks dict
-        for task_id, task in other.active_task_ids.iteritems():
-            if task_id in self.active_task_ids:
-                self.active_task_ids[task_id].update(task)
+        for task_id, task in other.active_tasks.iteritems():
+            if task_id in self.active_tasks:
+                self.active_tasks[task_id].update(task)
+            elif task_id in self.inactive_tasks:
+                self.active_tasks[task.id] = self.inactive_tasks[task.id]
+                del self.inactive_tasks[task.id]
+                self.active_tasks[task.id].update(task)
             else:
-                self.active_task_ids[task_id] = task
+                self.active_tasks[task_id] = task
 
         # Update inactive tasks dict
-        for task_id, task in other.inactive_task_ids.iteritems():
-            if task_id in self.inactive_task_ids:
-                self.inactive_task_ids[task_id].update(task)
+        for task_id, task in other.inactive_tasks.iteritems():
+            if task_id in self.inactive_tasks:
+                self.inactive_tasks[task_id].update(task)
+            elif task_id in self.active_tasks:
+                self.inactive_tasks[task.id] = self.active_tasks[task.id]
+                del self.active_tasks[task.id]
+                self.inactive_tasks[task.id].update(task)
             else:
-                self.inactive_task_ids[task_id] = task
+                self.inactive_tasks[task_id] = task
 
     def mark_inactive_tasks(self):
         # Create a separate list of IDs ahead of time,
         # because we may delete some and modify the dict
         # as we go, which would break a direct iterator
-        task_ids = self.active_task_ids.keys()
+        task_ids = self.active_tasks.keys()
 
         for task_id in task_ids:
-            task = self.active_task_ids[task_id]
             if task_id not in self.recently_touched_task_ids:
-                del self.active_task_ids[task_id]
-                self.inactive_task_ids[task_id] = task
+                task = self.active_tasks[task_id]
+                del self.active_tasks[task_id]
+                self.inactive_tasks[task_id] = task
         self.recently_touched_task_ids = set()
 
 def parse_ja_task_id(ja_task_id):
@@ -231,6 +238,7 @@ class Job (object):
         ]
 
         self.state = None
+        self.full_name = None
 
     def parse_job_fields(self, fields):
         self.id = long(fields[0])
@@ -306,38 +314,88 @@ class Jobs (object):
         self.job_data_updater.daemon = True
         self.job_data_updater.start()
 
+        self.old_job_ids = set()
+
+    def count_jobs_by_name(self, states, project=None, invert_logic=False):
+        if not project:
+            project = self.project
+
+        count_dict = {}
+        users = set()
+        for job in self.jobs.values():
+            if project and job.project != project:
+                continue
+
+            active_tasks = 0
+            for task in job.tasks.active_tasks.values():
+                if invert_logic:
+                    if task.state not in states:
+                        active_tasks += 1
+                else:
+                    if task.state in states:
+                        active_tasks += 1
+
+            if active_tasks > 0:
+                name = job.name
+                user = job.user
+                users.add(user)
+                job_tup = (name, user)
+
+                if job_tup in count_dict:
+                    count_dict[job_tup]['jobs'] += 1
+                    count_dict[job_tup]['tasks'] += active_tasks
+                else:
+                    count_dict[job_tup] = {
+                        'jobs' : 1,
+                        'tasks' : active_tasks,
+                    }
+
+        return_list = []
+        for job_tup in count_dict:
+            job_name, job_user = job_tup
+            return_list.append( (
+                count_dict[job_tup]['jobs'],
+                count_dict[job_tup]['tasks'],
+                job_user,
+                job_name,
+            ) )
+
+        return_list.sort(reverse=True)
+        self.counted_users = users
+        return return_list
+
     def running(self, project=None):
         # TODO: return a list of lists, each row is current output
         # Each listrow is data for columns
         # Columns: Number of jobs (with equal names), number of tasks (total), script name
-        if not project:
-            project = self.project
+        return self.count_jobs_by_name(['r'], project=project)
 
     def queued(self, project=None):
-        if not project:
-            project = self.project
+        return self.count_jobs_by_name(['qw'], project=project)
 
     def remaining(self, project=None):
+        return self.count_jobs_by_name(['r', 'qw'], project=project, invert_logic=True)
+
+    def num_users(self, project=None):
         if not project:
             project = self.project
 
-    def num_users(self):
         users = set()
         for job in self.jobs.values():
+            if project and job.project != project:
+                continue
             users.add(job.user)
         return len(users)
 
     def update(self):
-        self.jobs = {}
         if self.testing_mode:
             input_data = read_from_test_output(self.test_iteration)
             self.test_iteration += 1
         else:
             input_data = sh('qstat -ext -u \\*').split('\n')
 
-        parsed_job_ids = set()
         new_job_ids = set()
-        old_job_ids = set(self.jobs.keys())
+        parsed_job_ids = set()
         for line in input_data[2:]:
             job = Job(line)
             parsed_job_ids.add(job.id)
@@ -347,10 +405,11 @@ class Jobs (object):
                 self.jobs[job.id] = job
                 new_job_ids.add(job.id)
 
-        missing_job_ids = old_job_ids.difference(parsed_job_ids)
+        missing_job_ids = self.old_job_ids.difference(parsed_job_ids)
         for job_id in missing_job_ids:
             assert( job_id in self.jobs )
             self.jobs[job_id].state = 'finished'
+        self.old_job_ids = parsed_job_ids
 
         new_job_ids_list = list(new_job_ids)
         random.shuffle(new_job_ids_list)
@@ -404,33 +463,42 @@ def term_print(string):
     for split_string in string.split('\n'):
         print str(string) + term.clear_eol
 
-# def display_jobs(jobs, filter, display='{count:>7d} {job.user:12} {job.name}'):
-#     job_counts = {}
-
-#     for job in itertools.ifilter(filter, jobs):
-#         job_name = job.user, job.name
-#         job_counts.setdefault(job_name, {'job': job, 'count': 0})
-#         job_counts[job_name]['count'] += 1
-
-#     if not job_counts:
-#         term_print( '  none' )
-
-#     for user, name in sorted(job_counts):
-#         job, count = job_counts[user, name]
-#         term_print( display.format(**job_counts[user, name]) )
-
 def display(data):
-    pass
+    max_lengths = []
+    strings_to_print = []
+    for i, l in enumerate(data):
+        strings_to_print.append([])
+        for j, s in enumerate(l):
+            s = str(s)
+            strings_to_print[i].append(s)
+            s_len = len(s)
+            while len(max_lengths) < j+1:
+                max_lengths.append(0)
+            if s_len > max_lengths[j]:
+                max_lengths[j] = s_len
+
+    for row in strings_to_print:
+        row_str = ''
+        for i, x in enumerate(row):
+            row_str += '%s ' % x.ljust(max_lengths[i])
+        term_print(
+            row_str[:-1] # Remove trailing space
+        )
 
 def display_running_jobs(jobs):
-    if jobs.project is None:
-        term_print( "Currently running jobs:" )
-        # display_jobs(jobs, lambda j: j.state == 'r')
-    else:
-        term_print( "Currently running jobs by {0} users:".format(jobs.num_users()) )
-        # display_jobs(jobs, lambda j: j.state == 'r' and j.project == jobs.project)
+    running_jobs = jobs.running()
 
-    display( jobs.running() )
+    if jobs.project:
+        term_print( "Currently running jobs by {0} {1} users:".format( len(jobs.counted_users), jobs.project ) )
+    else:
+        term_print( "Currently running jobs by {0} users:".format( len(jobs.counted_users) ) )
+
+    display_list = [ [
+        'Jobs', 'Tasks', 'User', 'Job Name'
+    ] ]
+
+    display_list.extend( running_jobs )
+    display( display_list )
 
     term_print('') # spacer line
 
@@ -438,14 +506,12 @@ def display_queued_jobs(jobs):
     # filter = lambda j: j.state == 'qw'
     # display = '{count:>7d} {job.user:12} {job.name} ({job.ja_task_id})'
 
-    if jobs.project is None:
-        term_print( "Currently queued jobs:" )
-        # display_jobs(jobs, filter, display)
-    else:
-        term_print( "Currently queued jobs by {0} users:".format(jobs.num_users()) )
-        # display_jobs(jobs, lambda j: filter(j) and j.project == jobs.project, display)
+    queued_jobs = jobs.queued()
+    # display_jobs(jobs, filter, display)
+    term_print( "Currently queued jobs by {0} users:".format(len(jobs.counted_users)) )
+    # display_jobs(jobs, lambda j: filter(j) and j.project == jobs.project, display)
 
-    display( jobs.queued() )
+    display( queued_jobs )
 
     term_print('') # spacer line
 
@@ -454,12 +520,9 @@ def display_remaining_jobs(jobs):
     # filter = lambda j: j.state not in ('r', 'qw')
     # display = '{count:>7d} {job.user:12} {job.name} ({job.state})'
 
-    if jobs.project is None:
-        term_print( "Remaining jobs:" )
-        # display_jobs(jobs, filter, display)
-    else:
-        term_print( "Remaining jobs by {0} users:".format(jobs.num_users()) )
-        # display_jobs(jobs, lambda j: filter(j) and j.project == jobs.project, display)
+    # display_jobs(jobs, filter, display)
+    term_print( "Remaining jobs by {0} users:".format(jobs.num_users()) )
+    # display_jobs(jobs, lambda j: filter(j) and j.project == jobs.project, display)
 
     display( jobs.remaining(project) )
 
@@ -475,8 +538,8 @@ def run( project, testing_mode=False, interval=0 ):
 
         term_print( time.strftime("%a, %d %b %Y %H:%M:%S ") )
         display_running_jobs(jobs)
-        display_queued_jobs(jobs)
-        display_remaining_jobs(jobs)
+        # display_queued_jobs(jobs)
+        # display_remaining_jobs(jobs)
 
         if float(interval) == 0.0:
             return
