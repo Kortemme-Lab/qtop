@@ -17,9 +17,12 @@ Options:
         the projects that user calling the program belongs to will be used.
         Specify '*' to see all projects.
 
-    -i --interval=INTERVAL
+    -i
         Run the program in interactive mode, refreshing qstat data every
-        interval seconds [default: 0]
+        interval seconds
+
+    --interval=INTERVAL
+        Number of seconds between interactive refreshes
 
     --test
         Instead of running qstat, parse from output files in the testing_output
@@ -629,7 +632,15 @@ if __name__ == '__main__':
     args = docopt.docopt(__doc__)
 
     testing_mode = args['--test']
-    interval = float(args['--interval'])
+    interactive_mode = args['-i']
     project = choose_project(args['--project'])
+    args_interval = args['--interval']
+
+    if not interactive_mode and not args_interval:
+        interval = 0.0
+    elif interactive_mode and not args_interval:
+        interval = 10.0
+    elif args_interval:
+        interval = float( args_interval )
 
     run( project, testing_mode=testing_mode, interval=interval )
