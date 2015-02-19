@@ -342,10 +342,7 @@ class Jobs (object):
 
         self.old_job_ids = set()
 
-    def count_jobs_by_name(self, project=None):
-        if not project:
-            project = self.project
-
+    def count_jobs_by_name(self, project):
         count_dict = {}
         users = set()
         for job in self.jobs.values():
@@ -470,6 +467,15 @@ class Jobs (object):
             users.add(job.user)
         return len(users)
 
+    def percent_used_by_project(self, project):
+        project_tasks = self.count_jobs_by_name(project)
+        all_tasks = self.count_jobs_by_name(None)
+
+        all_running_tasks = sum([x[0] for x in all_tasks])
+        project_running_tasks = sum([x[0] for x in project_tasks])
+
+        return 100.0 * float(project_running_tasks) / float(all_running_tasks)
+
     def update(self):
         if self.testing_mode:
             input_data = read_from_test_output(self.test_iteration)
@@ -567,7 +573,7 @@ def display(data):
         )
 
 def display_jobs(jobs):
-    job_display_list = jobs.count_jobs_by_name()
+    job_display_list = jobs.count_jobs_by_name(jobs.project)
 
     if len(job_display_list) == 0:
         return
@@ -599,6 +605,11 @@ def run( project, testing_mode=False, interval=0 ):
         jobs.update()
 
         term_printer.queue( time.strftime("%a, %d %b %Y %H:%M:%S ") )
+        if jobs.project:
+            term_printer.queue(
+                '\nPercentage of overall cluster in use by project %s:' % (jobs.project)
+            )
+            term_printer.queue( '%.2f%%\n' % jobs.percent_used_by_project(jobs.project) )
         display_jobs(jobs)
         term_printer.finalize()
 
