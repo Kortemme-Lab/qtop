@@ -317,7 +317,7 @@ def enhance_job_data(job_id_queue, results_queue, testing_mode):
                         qstat_data[fields[0].strip()] = fields[1].strip()
                 if len(qstat_data) > 0:
                     results_queue.put(qstat_data)
-                    time.sleep(2.0) # Only run qstat -j every this n seconds
+                    time.sleep(15.0) # Only run qstat -j for one job every this n seconds
         else:
             time.sleep(0.1) # Check queue more often, as this is easy
 
@@ -612,7 +612,7 @@ def run( project, testing_mode=False, interval=0 ):
         term_printer.queue( time.strftime("%a, %d %b %Y %H:%M:%S ") )
         if jobs.project:
             term_printer.queue(
-                '\nPercentage of overall cluster in use by project %s:' % (jobs.project)
+                '\nPercentage of overall slots in use by project %s:' % (jobs.project)
             )
             term_printer.queue( '%.2f%%\n' % jobs.percent_used_by_project(jobs.project) )
         display_jobs(jobs)
@@ -636,8 +636,13 @@ if __name__ == '__main__':
     if not interactive_mode and not args_interval:
         interval = 0.0
     elif interactive_mode and not args_interval:
-        interval = 10.0
+        interval = 60.0
     elif args_interval:
         interval = float( args_interval )
+
+    if interval < 60.0:
+        raise Exception(
+            'ERROR: Update interval cannot be less than 60 seconds (Joshua has complained)'
+        )
 
     run( project, testing_mode=testing_mode, interval=interval )
