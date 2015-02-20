@@ -137,7 +137,7 @@ class Task (object):
             self.stckt = fields[15]
             self.share = fields[16]
             self.queue = fields[17]
-            self.slots = fields[18]
+            self.slots = int(fields[18])
 
         else:
             self.cpu = None
@@ -150,7 +150,7 @@ class Task (object):
             self.stckt = fields[12]
             self.share = fields[13]
             self.queue = None
-            self.slots = fields[14]
+            self.slots = int(fields[14])
 
     def update(self, other):
         for attr in self.basic_attrs_to_update:
@@ -355,6 +355,7 @@ class Jobs (object):
                 'short_q_tasks' : 0,
                 'waiting_q_tasks' : 0,
                 'other_q_tasks' : 0,
+                'slots' : 0,
             }
 
             # Iterate through all tasks in job and count active ones
@@ -374,6 +375,8 @@ class Jobs (object):
                     task_counts['waiting_q_tasks'] += 1
                 else:
                     task_counts['other_q_tasks'] += 1
+
+                task_counts['slots'] += task.slots
 
             # If we counted any active tasks, then count them for this job
             # Job counts are based on a unique job short name and username (tuple)
@@ -395,6 +398,7 @@ class Jobs (object):
                     count_dict[job_tup]['full_names'].add(job.full_name)
                     count_dict[job_tup]['waiting_q_tasks'] += task_counts['waiting_q_tasks']
                     count_dict[job_tup]['other_q_tasks'] += task_counts['other_q_tasks']
+                    count_dict[job_tup]['slots'] += task_counts['slots']
                 else:
                     count_dict[job_tup] = {
                         'jobs' : 1,
@@ -405,6 +409,7 @@ class Jobs (object):
                         'long_q_tasks' : task_counts['long_q_tasks'],
                         'waiting_q_tasks' : task_counts['waiting_q_tasks'],
                         'other_q_tasks' : task_counts['other_q_tasks'],
+                        'slots' : task_counts['slots'],
                         'full_names' : set([job.full_name]),
                     }
 
@@ -441,7 +446,7 @@ class Jobs (object):
         for job_tup in count_dict:
             job_short_name, job_user = job_tup
             return_list.append( (
-                count_dict[job_tup]['running_tasks'],
+                count_dict[job_tup]['slots'],
                 count_dict[job_tup]['jobs'],
                 count_dict[job_tup]['lab_q_tasks'],
                 count_dict[job_tup]['long_q_tasks'],
@@ -584,10 +589,10 @@ def display_jobs(jobs):
         term_printer.queue( "Currently running jobs by {0} users:".format( len(jobs.counted_users) ) )
 
     display_list = [ [
-        'Running Tasks', 'Jobs',
+        'Slots', 'Jobs',
         'lab.q', 'long.q', 'short.q',
-        'Queued Tasks',
-        'Other Tasks',
+        'Queued',
+        'Other',
         'User',
         'Name',
     ] ]
