@@ -363,10 +363,13 @@ class Jobs (object):
                 if task.state == 'r':
                     if task.queue.startswith('lab.q'):
                         task_counts['lab_q_tasks'] += 1
+                        task_counts['slots'] += task.slots
                     elif task.queue.startswith('long.q'):
                         task_counts['long_q_tasks'] += 1
+                        task_counts['slots'] += task.slots
                     elif task.queue.startswith('short.q'):
                         task_counts['short_q_tasks'] += 1
+                        task_counts['slots'] += task.slots
                     else:
                         raise Exception(
                             "Couldn't recognize queue type %s (job %d task %d)" % (task.queue, job.id, task.id)
@@ -375,8 +378,6 @@ class Jobs (object):
                     task_counts['waiting_q_tasks'] += 1
                 else:
                     task_counts['other_q_tasks'] += 1
-
-                task_counts['slots'] += task.slots
 
             # If we counted any active tasks, then count them for this job
             # Job counts are based on a unique job short name and username (tuple)
