@@ -640,9 +640,9 @@ if __name__ == '__main__':
     elif args_interval:
         interval = float( args_interval )
 
-    if interval < 60.0:
+    if interval < 60.0 and interval != 0.0:
         raise Exception(
-            'ERROR: Update interval cannot be less than 60 seconds (Joshua has complained)'
+            'ERROR: Update interval cannot be less than 60 seconds'
         )
 
     run( project, testing_mode=testing_mode, interval=interval )
