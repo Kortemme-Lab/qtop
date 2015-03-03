@@ -374,7 +374,7 @@ class Jobs (object):
                         raise Exception(
                             "Couldn't recognize queue type %s (job %d task %d)" % (task.queue, job.id, task.id)
                         )
-                elif task.state == 'qw':
+                elif 'qw' in task.state: # Covers 'qw' and 'hqw'
                     task_counts['waiting_q_tasks'] += 1
                 else:
                     task_counts['other_q_tasks'] += 1
