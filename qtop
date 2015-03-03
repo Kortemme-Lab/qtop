@@ -360,7 +360,7 @@ class Jobs (object):
 
             # Iterate through all tasks in job and count active ones
             for task in job.tasks.active_tasks.values():
-                if task.state == 'r':
+                if task.state == 'r' or task.state == 'hr':
                     if task.queue.startswith('lab.q'):
                         task_counts['lab_q_tasks'] += 1
                         task_counts['slots'] += task.slots
