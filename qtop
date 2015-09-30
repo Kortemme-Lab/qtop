@@ -26,7 +26,8 @@ Options:
 
     --test
         Instead of running qstat, parse from output files in the testing_output
-        directory
+        directory. Usually, this should also be run by specifying a project
+        specifically with the --project flag.
 
 """
 
@@ -37,6 +38,10 @@ import random
 from Queue import Queue
 from threading import Thread
 from blessings import Terminal
+import datetime
+
+def ts(td):
+    return (td.microseconds + (td.seconds + td.days * 24 * 3600) * 1e6) / 1e6
 
 class TermPrinter(object):
     def __init__(self):
@@ -105,7 +110,8 @@ def choose_project(project=None, user=None):
     if project is not None:
         return project
     else:
-        user = choose_user(user)
+        if user == None:
+            user = choose_user(user)
         return sh('''\
                 qconf -suser {user} |
                 grep default_project |
@@ -122,12 +128,25 @@ class Task (object):
             'ftckt', 'stckt', 'share',
             'queue', 'slots',
         ]
+        self.last_update_time = datetime.datetime.now()
 
     def parse_task_fields(self, fields):
+        self.last_update_time = datetime.datetime.now()
         self.state = fields[7]
 
         if 'r' in self.state:
-            self.cpu = fields[8]
+            if fields[8] == 'NA':
+                self.cpu = None
+            else:
+                cpu_data = [int(x) for x in fields[8].split(':')]
+                assert( len(cpu_data) == 4 )
+                self.cpu = datetime.timedelta(
+                    days = cpu_data[0],
+                    hours = cpu_data[1],
+                    minutes = cpu_data[2],
+                    seconds = cpu_data[3],
+                )
+
             self.mem = fields[9]
             self.io = fields[10]
             self.tckts = fields[11]
@@ -155,6 +174,14 @@ class Task (object):
     def update(self, other):
         for attr in self.basic_attrs_to_update:
             setattr(self, attr, getattr(other, attr))
+        self.last_update_time = datetime.datetime.now()
+
+    def estimated_runtime(self):
+        # Returns the CPU timedelta + time since last update
+        if self.cpu:
+            return datetime.datetime.now() - self.last_update_time + self.cpu
+        else:
+            return None
 
 class Tasks (object):
     # Each job only holds one Tasks object, but it is split
@@ -165,6 +192,20 @@ class Tasks (object):
         self.active_tasks = {} # Task IDs still appearing in output
         self.inactive_tasks = {} # No longer appearing in output
         self.parse_tasks_fields(fields)
+
+    def count_queued_tasks(self):
+        count = 0
+        for task in self.active_tasks.values():
+            if task.state == 'qw':
+                count += 1
+        return count
+
+    def count_active_running_tasks(self):
+        count = 0
+        for task in self.active_tasks.values():
+            if task.state == 'r':
+                count += 1
+        return count
 
     def parse_tasks_fields(self, fields):
         ja_task_id = fields[-1]
@@ -228,6 +269,35 @@ class Tasks (object):
                 del self.active_tasks[task_id]
                 self.inactive_tasks[task_id] = task
         self.recently_touched_task_ids = set()
+
+    def mean_time_per_inactive_task(self):
+        # Returns the mean estimated run time of each inactive task with a time > 0
+        total_time = datetime.timedelta()
+        count = 0.0
+        for task in self.inactive_tasks.values():
+            runtime = task.estimated_runtime()
+            if runtime:
+                total_time += runtime
+                count += 1.0
+        if count == 0.0:
+            return None
+        else:
+            return datetime.timedelta(seconds = ts(total_time) / count)
+
+    def mean_time_per_active_running_task(self):
+        # Returns the mean estimated run time of each inactive task with a time > 0
+        total_time = datetime.timedelta()
+        count = 0.0
+        for task in self.active_tasks.values():
+            if task.state == 'r':
+                runtime = task.estimated_runtime()
+                if runtime:
+                    total_time += runtime
+                    count += 1.0
+        if count == 0.0:
+            return None
+        else:
+            return datetime.timedelta(seconds = ts(total_time) / count)
 
 def parse_ja_task_id(ja_task_id):
     task_ids = set()
@@ -322,11 +392,12 @@ def enhance_job_data(job_id_queue, results_queue, testing_mode):
             time.sleep(0.1) # Check queue more often, as this is easy
 
 class Jobs (object):
-    def __init__(self, testing_mode, project):
+    def __init__(self, testing_mode, project, user):
         self.jobs = {}
         self.project = project
         self.test_iteration = 0
         self.testing_mode = testing_mode
+        self.user = user
 
         self.jobs_to_update = Queue()
         self.updated_jobs_results = Queue()
@@ -342,7 +413,92 @@ class Jobs (object):
 
         self.old_job_ids = set()
 
-    def count_jobs_by_name(self, project):
+    def get_user_jobs(self):
+        return_jobs = []
+        for job in self.jobs.values():
+            if job.user == self.user:
+                return_jobs.append(job)
+        return return_jobs
+
+    def estimated_time_left(self, job_tup):
+        # Returns estimated time left to complete all jobs
+        # associated with job_tup
+        mean_inactive_time = self.mean_time_per_inactive_task(job_tup)
+        if not mean_inactive_time:
+            return None
+        mean_active_time = self.mean_time_per_active_running_task(job_tup)
+        if not mean_active_time:
+            return None
+
+        active_running_tasks_count = self.count_active_running_tasks(job_tup)
+        queued_tasks_left = self.count_queued_tasks(job_tup)
+
+        return datetime.timedelta( seconds =
+             max(0, ts(mean_inactive_time) - ts(mean_active_time))
+            +
+            ts(mean_inactive_time) * queued_tasks_left / float(active_running_tasks_count)
+        )
+
+    def count_queued_tasks(self, job_tup):
+        jobs = self.map_job_tups_to_jobs()[job_tup]
+        count = 0
+        for job in jobs:
+            count += job.tasks.count_queued_tasks()
+        return count
+
+    def count_active_running_tasks(self, job_tup):
+        jobs = self.map_job_tups_to_jobs()[job_tup]
+        count = 0
+        for job in jobs:
+            count += job.tasks.count_active_running_tasks()
+        return count
+
+    def mean_time_per_inactive_task(self, job_tup):
+        # Returns mean time per inactive task
+        jobs = self.map_job_tups_to_jobs()[job_tup]
+        mean_runtimes = []
+        for job in jobs:
+            mean_time = job.tasks.mean_time_per_inactive_task()
+            if mean_time:
+                mean_runtimes.append(ts(mean_time))
+        if len(mean_runtimes) == 0:
+            return None
+        else:
+            return datetime.timedelta( seconds = float(sum(mean_runtimes)) / float(len(mean_runtimes)) )
+
+    def mean_time_per_active_running_task(self, job_tup):
+        # Returns mean time per inactive task
+        jobs = self.map_job_tups_to_jobs()[job_tup]
+        mean_runtimes = []
+        for job in jobs:
+            mean_time = job.tasks.mean_time_per_active_running_task()
+            if mean_time:
+                mean_runtimes.append(ts(mean_time))
+        if len(mean_runtimes) == 0:
+            return None
+        else:
+            return datetime.timedelta( seconds = float(sum(mean_runtimes)) / float(len(mean_runtimes)) )
+
+    def map_job_tups_to_jobs(self, search_project=None, search_user=None):
+        m = {}
+        for job in self.jobs.values():
+            if search_project != None and job.project != search_project:
+                continue
+            if search_user != None and job.user != search_user:
+                continue
+
+            short_name = job.short_name
+            user = job.user
+            job_tup = (short_name, user)
+            if job_tup not in m:
+                m[job_tup] = []
+            m[job_tup].append(job)
+        return m
+
+    def job_tups(self, project=None, user=None):
+        return self.map_job_tups_to_jobs(search_project=project, search_user=user).keys()
+
+    def count_dict_by_name(self, project):
         count_dict = {}
         users = set()
         for job in self.jobs.values():
@@ -414,6 +570,7 @@ class Jobs (object):
                         'full_names' : set([job.full_name]),
                     }
 
+        self.counted_users = users
         # Process full names to be common string by position
         # It could be cool to make this instead add wildcards more fancily
         for job_tup, inner_dict in count_dict.iteritems():
@@ -443,6 +600,10 @@ class Jobs (object):
 
             inner_dict['common_full_name'] = common_full_name
 
+        return count_dict
+
+    def count_jobs_by_name(self, project):
+        count_dict = self.count_dict_by_name(project)
         return_list = []
         for job_tup in count_dict:
             job_short_name, job_user = job_tup
@@ -459,7 +620,6 @@ class Jobs (object):
             ) )
 
         return_list.sort(reverse=True)
-        self.counted_users = users
         return return_list
 
     def num_users(self, project=None):
@@ -601,12 +761,38 @@ def display_jobs(jobs):
     display_list.extend( job_display_list )
     display( display_list )
 
-def run( project, testing_mode=False, interval=0 ):
+    # Job tuples are (job.short_name, job.user)
+    # Allows grouping of jobs with same name
+    job_tups = jobs.job_tups(project=jobs.project, user=jobs.user)
+    if len(job_tups) > 0:
+        mean_runtimes_display_list = [ [
+            'Name',
+            'Mean runtime',
+            'Estimated time till completion',
+        ]]
+
+        for job_tup in job_tups:
+            mean_time = jobs.mean_time_per_inactive_task(job_tup)
+            est_time_left = jobs.estimated_time_left(job_tup)
+            if mean_time or est_time_left:
+                mean_runtimes_display_list.append( [
+                    job_tup[0], mean_time,
+                    est_time_left,
+                ] )
+
+        if len(mean_runtimes_display_list) >= 2:
+            if len(job_tups) == 1:
+                term_printer.queue( "\nUser {0} is currently running 1 unique job:".format( jobs.user ) )
+            elif len(job_tups) > 1:
+                term_printer.queue( "\nUser {0} is currently running {1} unique jobs:".format( jobs.user, len(job_tups) ) )
+            display( mean_runtimes_display_list )
+
+def run( project, user, testing_mode=False, interval=0 ):
     # Figure out what projects to display information for.  If the user
     # specifies one or more projects on the command line, use them.  Otherwise
     # use the projects the current user belongs to.
 
-    jobs = Jobs(testing_mode, project)
+    jobs = Jobs(testing_mode, project, user)
     while True:
         jobs.update()
 
@@ -631,8 +817,9 @@ if __name__ == '__main__':
 
     testing_mode = args['--test']
     interactive_mode = args['-i']
-    project = choose_project(args['--project'])
     args_interval = args['--interval']
+    user = choose_user(args['--user'])
+    project = choose_project(args['--project'], user=user)
 
     if not interactive_mode and not args_interval:
         interval = 0.0
@@ -641,9 +828,9 @@ if __name__ == '__main__':
     elif args_interval:
         interval = float( args_interval )
 
-    if interval < 60.0 and interval != 0.0:
+    if interval < 60.0 and interval != 0.0 and not testing_mode:
         raise Exception(
             'ERROR: Update interval cannot be less than 60 seconds'
         )
 
-    run( project, testing_mode=testing_mode, interval=interval )
+    run( project, user, testing_mode=testing_mode, interval=interval )
