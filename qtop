@@ -33,7 +33,6 @@ Options:
 
 import subprocess, getpass, collections, itertools
 import os
-import sys
 import time
 import random
 from Queue import Queue
@@ -119,37 +118,21 @@ def choose_project(project=None, user=None):
                 awk '{{print $2}}' ''')
 
 class Task (object):
-    def __init__ (self, task_id, fields, store_minimal_information = True):
+    # Each task will have many subtasks
+    def __init__ (self, task_id, fields):
         self.id = task_id
-        self.store_minimal_information = store_minimal_information
         self.parse_task_fields(fields)
-        if store_minimal_information:
-            self.basic_attrs_to_update = [
-                'state',
-                'queue', 'slots',
-            ]
-        else:
-            self.basic_attrs_to_update = [
-                'state', 'cpu', 'mem', 'io',
-                'tckts', 'ovrts', 'otckt',
-                'ftckt', 'stckt', 'share',
-                'queue', 'slots',
-            ]
+        self.basic_attrs_to_update = [
+            'state', 'cpu', 'mem', 'io',
+            'tckts', 'ovrts', 'otckt',
+            'ftckt', 'stckt', 'share',
+            'queue', 'slots',
+        ]
         self.last_update_time = datetime.datetime.now()
 
     def parse_task_fields(self, fields):
-        self.state = fields[7]
-
-        if self.store_minimal_information:
-            if 'r' in self.state:
-                self.queue = fields[17]
-                self.slots = int(fields[18])
-            else:
-                self.queue = None
-                self.slots = int(fields[14])
-            return
-
         self.last_update_time = datetime.datetime.now()
+        self.state = fields[7]
 
         if 'r' in self.state:
             if fields[8] == 'NA':
@@ -233,7 +216,6 @@ class Tasks (object):
             new_task_ids = set()
 
         self.all_task_ids.update( new_task_ids )
-        print '%d task ids to update' % (len(new_task_ids))
         for task_id in new_task_ids:
             self.update_task( Task(task_id, fields) )
 
@@ -410,7 +392,7 @@ def enhance_job_data(job_id_queue, results_queue, testing_mode):
             time.sleep(0.1) # Check queue more often, as this is easy
 
 class Jobs (object):
-    def __init__(self, testing_mode, project, user, background_update = False):
+    def __init__(self, testing_mode, project, user):
         self.jobs = {}
         self.project = project
         self.test_iteration = 0
@@ -419,16 +401,15 @@ class Jobs (object):
 
         self.jobs_to_update = Queue()
         self.updated_jobs_results = Queue()
-        if background_update:
-            self.job_data_updater = Thread(
-                target = enhance_job_data,
-                args = (
-                    self.jobs_to_update,
-                    self.updated_jobs_results,
-                    self.testing_mode)
-            )
-            self.job_data_updater.daemon = True
-            self.job_data_updater.start()
+        self.job_data_updater = Thread(
+            target = enhance_job_data,
+            args = (
+                self.jobs_to_update,
+                self.updated_jobs_results,
+                self.testing_mode)
+        )
+        self.job_data_updater.daemon = True
+        self.job_data_updater.start()
 
         self.old_job_ids = set()
 
@@ -670,13 +651,8 @@ class Jobs (object):
 
         new_job_ids = set()
         parsed_job_ids = set()
-        total_line_count = len(input_data[2:])
-        line_count = 1
         for line in input_data[2:]:
-            print line
             job = Job(line)
-            print 'Finished %d lines (%d total)\n' % (line_count, total_line_count)
-            line_count += 1
             parsed_job_ids.add(job.id)
             if job.id in self.jobs:
                 self.jobs[job.id].update(job)
@@ -816,13 +792,7 @@ def run( project, user, testing_mode=False, interval=0 ):
     # specifies one or more projects on the command line, use them.  Otherwise
     # use the projects the current user belongs to.
 
-    # Only start background updating thread if interval > 0
-    if float(interval) > 0.0:
-        background_update = True
-    else:
-        background_update = False
-
-    jobs = Jobs(testing_mode, project, user, background_update = background_update )
+    jobs = Jobs(testing_mode, project, user)
     while True:
         jobs.update()
 
